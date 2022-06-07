@@ -3,7 +3,7 @@ import random
 
 import matplotlib.pyplot as plt
 import numpy as np
-from numpy.linalg import matrix_power
+from numpy.linalg import matrix_power, norm
 from scipy.linalg import expm
 
 # TODO: Extract these
@@ -13,10 +13,9 @@ Z = np.array([[1, 0], [0, -1]])
 
 
 class Simulation:
-    def __init__(self, N: int, T: float, epsilon: float, r: int, order: int):
+    def __init__(self, N: int, T: float, r: int, order: int):
         self.N = N
         self.T = T
-        self.epsilon = epsilon
         self.h_coeff = np.random.uniform(0, 1, N - 1)
         self.r = r
         self.order = order
@@ -68,7 +67,7 @@ class Simulation:
     def get_segmented_trotterization(self):
         result = np.eye(2 ** self.N)
         for segment in range(self.r):
-            print("\rSegment {} is being processed.".format(str(segment)), end="")
+            print("\rSegment {}|{} is being processed.".format(str(segment + 1), str(self.r)), end="")
             result = result @ self.get_kth_order_trotterization(self.T / self.r, self.order)
 
         return result
@@ -112,6 +111,36 @@ def plot_r_graph(epsilon: float):
     plt.show()
 
 
+def plot_error(N: int, T: float):
+    K = [1, 2, 3]
+    R = [2 ** x for x in range(7, -1, -1)]
+    delta_t = [T / r for r in R]
+    colors = ["r", "b", "g"]
+
+    for k_idx, k in enumerate(K):
+        empirical_errors = []
+        theoretical_errors = []
+        for t_idx, t in enumerate(delta_t):
+            simulation = Simulation(N, T, R[t_idx], k * 2)
+            trotterization = simulation.simulate()
+            exact_sol = simulation.get_exact_solution()
+            error = norm(trotterization - exact_sol)
+            empirical_errors.append(error)
+            theoretical_errors.append(N * t ** (2 * k) * T)
+        plt.plot(delta_t, empirical_errors, label="k=" + str(k), color=colors[k_idx])
+        plt.plot(delta_t, theoretical_errors, label="analytic k=" + str(k), linestyle="dashed", color=colors[k_idx])
+
+    plt.xlabel(r'$\delta t$')
+    plt.ylabel("Error")
+
+    plt.title(r'$N={}, T={}$'.format(N, T))
+
+    plt.xscale("log")
+    plt.yscale("log")
+    plt.legend()
+    plt.show()
+
+
 if __name__ == "__main__":
     random.seed(22)
     N = 7
@@ -121,11 +150,15 @@ if __name__ == "__main__":
     print("r: ", r_2k)
     print("k: ", k)
 
-    plot_r_graph(epsilon)
+    #plot_r_graph(epsilon)
+    plot_error(6, 5)
 
-    simulation = Simulation(N, T, epsilon, math.ceil(r_2k), 2 * k)
+    simulation = Simulation(N, T, math.ceil(r_2k), 2 * k)
     trotterization = simulation.simulate()
     exact_sol = simulation.get_exact_solution()
+
+    norm = norm(exact_sol - trotterization)
+    print(norm)
 
     print(np.trace(np.conj(trotterization).T @ exact_sol) - 2 ** N)
     print(np.allclose(trotterization, exact_sol, atol=epsilon))

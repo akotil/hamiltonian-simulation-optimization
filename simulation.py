@@ -6,7 +6,6 @@ import numpy as np
 from numpy.linalg import matrix_power, norm
 from scipy.linalg import expm
 
-# TODO: Extract these
 X = np.array([[0, 1], [1, 0]])
 Y = np.array([[0, -1j], [1j, 0]])
 Z = np.array([[1, 0], [0, -1]])
@@ -26,6 +25,30 @@ class Simulation:
     def get_single_hamiltonian(self, k: int, t: float) -> np.ndarray:
         exponent = lambda h: (np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + h * np.kron(Z, np.eye(2)))
         exponential = expm(exponent(self.h_coeff[k]) * -1j * t)
+        return exponential
+
+    def get_hamiltonian_layer(self, parity: int, t: float):
+        """
+        Args:
+        :parity: 0 if the layer should represent even Hamiltonians, 1 otherwise.
+
+        :return: A list of ndarrays corresponding to even/odd Hamiltonians belonging to the same circuit layer.
+        """
+        # TODO: Coefficients differ and we have different Vs
+        V = np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + np.kron(Z, np.eye(2))
+        V = expm(V * -1j * t)
+        layer = [V] * (math.ceil(self.N / 2) - 1) if parity == 0 else [V] * (math.floor(self.N / 2))
+        # fill with identity if necessary
+        # TODO: Generalize to even parity also
+        if parity == 1 and self.N % 2 == 1:
+            layer.append(np.eye(2))
+
+        return layer
+
+    def get_block_hamiltonian(self, k: int, t: float) -> np.ndarray:
+        exponent = lambda h: (np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + h * np.kron(Z, np.eye(2)))
+        # TODO: Temporarily fixed the h coefficient
+        exponential = expm(exponent(1) * -1j * t)
         identity_1 = np.eye(2 ** k) if k > 0 else 1
         identity_2 = np.eye(2 ** (self.N - k - 2)) if k < self.N - 2 else 1
 
@@ -40,11 +63,11 @@ class Simulation:
         if parity == 0:
             # calculate the Hamiltonian for even terms
             for k in range(1, math.ceil(self.N / 2)):
-                hamiltonian_product = hamiltonian_product @ self.get_single_hamiltonian(2 * k - 1, t)
+                hamiltonian_product = hamiltonian_product @ self.get_block_hamiltonian(2 * k - 1, t)
         else:
             # calculate the Hamiltonian for odd terms
             for k in range(1, math.floor(self.N / 2) + 1):
-                hamiltonian_product = hamiltonian_product @ self.get_single_hamiltonian(2 * k - 2, t)
+                hamiltonian_product = hamiltonian_product @ self.get_block_hamiltonian(2 * k - 2, t)
 
         return hamiltonian_product
 
@@ -79,7 +102,8 @@ class Simulation:
         for k in range(self.N - 1):
             identity_1 = np.eye(2 ** k) if k > 0 else 1
             identity_2 = np.eye(2 ** (self.N - k - 2)) if k < self.N - 2 else 1
-            term = np.kron(np.kron(identity_1, kron_sum(self.h_coeff[k])), identity_2)
+            # TODO: Temporarily disable h
+            term = np.kron(np.kron(identity_1, kron_sum(1)), identity_2)
             hamiltonian += term
 
         ref_sol = expm(-1j * hamiltonian * self.T)
@@ -112,11 +136,11 @@ def plot_r_graph(epsilon: float):
 
 
 def plot_error(N: int, T: float):
-    K = [1, 2, 3]
-    R = [2 ** x for x in range(7, -1, -1)]
+    K = [1, 2, 3, 4]
+    R = [2 ** x for x in range(9, 2, -1)]
     delta_t = [T / r for r in R]
-    colors = ["r", "b", "g"]
-
+    print(delta_t)
+    colors = ["r", "b", "g", "m"]
     for k_idx, k in enumerate(K):
         empirical_errors = []
         theoretical_errors = []
@@ -151,7 +175,7 @@ if __name__ == "__main__":
     print("k: ", k)
 
     #plot_r_graph(epsilon)
-    plot_error(6, 5)
+    plot_error(3, 5)
 
     simulation = Simulation(N, T, math.ceil(r_2k), 2 * k)
     trotterization = simulation.simulate()

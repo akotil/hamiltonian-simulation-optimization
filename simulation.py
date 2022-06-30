@@ -38,10 +38,17 @@ class Simulation:
         V = np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + np.kron(Z, np.eye(2))
         V = expm(V * -1j * t)
         layer = [V] * (math.ceil(self.N / 2) - 1) if parity == 0 else [V] * (math.floor(self.N / 2))
+
         # fill with identity if necessary
-        # TODO: Generalize to even parity also
         if parity == 1 and self.N % 2 == 1:
             layer.append(np.eye(2))
+
+        elif parity == 0 and self.N % 2 == 1:
+            layer = [np.eye(2)] + layer
+
+        elif parity == 0 and self.N % 2 == 0:
+            # TODO: periodic boundary!
+            pass
 
         return layer
 

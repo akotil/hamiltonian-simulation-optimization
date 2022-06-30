@@ -76,26 +76,31 @@ class Optimization:
             return 2 ** no_wires_V1, 4, 2 ** no_wires_V2, 2 ** no_wires_V1, 4, 2 ** no_wires_V2
 
     def differentiate_odd_layer(self):
-        # TODO: Specify which layer should be differentiated
-        derivation = 0
-        odd_layer = simulation.get_hamiltonian_layer(1, self.t)
-        for k in range(len(odd_layer)):
-            print(k)
-            V = get_segmented_V(k, odd_layer, self.t)
-            left_matrix = self.even @ self.odd @ self.Href
-            left_tensor = np.reshape(left_matrix, self._get_left_tensor_shape(V))
+        left_matrix = self.even @ self.odd @ self.Href
+        return self._differentiate_layer(1, left_matrix)
 
+    def differentiate_even_layer(self):
+        left_matrix = self.odd @ self.Href @ self.odd
+        return self._differentiate_layer(0, left_matrix)
+
+    def _differentiate_layer(self, parity, left_matrix):
+        derivation = 0
+        layer = simulation.get_hamiltonian_layer(parity, self.t)
+        if parity == 1:
+            k_range = range(len(layer)) if self.N % 2 == 0 else range(len(layer) - 1)
+        else:
+            k_range = range(1, len(layer)) if self.N % 2 == 1 else range(len(layer))
+        for k in k_range:
+            print(k)
+            V = get_segmented_V(k, layer, self.t)
+            left_tensor = np.reshape(left_matrix, self._get_left_tensor_shape(V))
             partial_derivation = differentiate_kth_hamiltonian(left_matrix, left_tensor, V)
             derivation += partial_derivation
         return derivation
 
-    def differentiate_even_layer(self):
-        pass
-
 
 if __name__ == "__main__":
-    N = 6
-    # TODO: Think about periodic boundaries
+    N = 5
     simulation = Simulation(N, 0.01, 5, 2)
     optimization = Optimization(simulation, 0.01)
     optimization.differentiate_odd_layer()

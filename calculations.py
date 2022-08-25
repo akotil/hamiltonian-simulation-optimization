@@ -7,26 +7,17 @@ from simulation import Simulation
 
 from gradient_check import eval_numerical_gradient
 
-X = np.array([[0, 1], [1, 0]])
-Y = np.array([[0, -1j], [1j, 0]])
-Z = np.array([[1, 0], [0, -1]])
+from utils import X, Y, Z, kron
 
 
-def kron(elements: tuple):
-    kronecker_product = 1
-    for element in elements:
-        kronecker_product = np.kron(kronecker_product, element)
-    return kronecker_product
-
-
-class Optimization:
+class Derivation:
     def __init__(self, simulation: Simulation, t: float):
         self.simulation = simulation
         self.N = simulation.N
         self.t = t
-        self.Href = simulation.get_exact_solution()
         self.even = simulation.get_parity_hamiltonian(t, 0)
         self.odd = simulation.get_parity_hamiltonian(t / 2, 1)
+        self.Href = simulation.get_exact_solution()
 
     def _get_left_tensor_shape(self, V):
         V_1, single_V, V_2 = V
@@ -61,38 +52,50 @@ class Optimization:
 
         # check the correctness of the differentiation
         single_V = np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + np.kron(Z, np.eye(2))
-        single_V = expm(single_V * -1j * 0.01)
+        single_V = expm(single_V * -1j * self.t / 2)
         check_trace = np.tensordot(partial_derivation, single_V, axes=([0, 1], [1, 0]))
         ref_trace = np.trace(left_matrix @ (np.kron(np.kron(V_1, single_V), V_2)))
-        print("Calculated trace: ", check_trace)
-        print("Reference trace: ", ref_trace)
+        # print("Calculated trace: ", check_trace)
+        # print("Reference trace: ", ref_trace)
         assert np.allclose(ref_trace, check_trace)
         return partial_derivation
 
-    def get_segmented_V(self, k: int, layer: [np.ndarray], t: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def get_segmented_V(self, k: int, layer: [np.ndarray], t: float, single_V: np.ndarray =
+    None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         V_1, V_2 = 1, 1
         for idx_1 in range(k):
             V_1 = np.kron(V_1, layer[idx_1])
         for idx_2 in range(k + 1, len(layer)):
             V_2 = np.kron(V_2, layer[idx_2])
 
-        # TODO: Can be extracted
-        single_V = np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + np.kron(Z, np.eye(2))
-        single_V = expm(single_V * -1j * t)
+        if single_V is None:
+            # TODO: Can be extracted
+            single_V = np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + np.kron(Z, np.eye(2))
+            single_V = expm(single_V * -1j * t)
 
         return V_1, single_V, V_2
 
-    def differentiate_odd_layer(self) -> np.ndarray:
-        left_matrix = self.even @ self.odd @ self.Href
-        return self._differentiate_layer(1, left_matrix)
+    def differentiate_odd_layer(self, start_layer: list[np.ndarray] = None, left_matrix=None) -> np.ndarray:
+        if left_matrix is None:
+            left_matrix = self.even @ self.odd @ (
+                        -2 * (self.simulation.get_exact_solution() - kron(start_layer) @ self.even @ self.odd))
 
-    def differentiate_even_layer(self) -> np.ndarray:
-        left_matrix = self.odd @ self.Href @ self.odd
-        return self._differentiate_layer(0, left_matrix)
+        return self._differentiate_layer(1, left_matrix, start_layer)
 
-    def _differentiate_layer(self, parity, left_matrix) -> np.ndarray:
-        derivation = np.zeros((4,4), dtype="complex")
-        layer = simulation.get_hamiltonian_layer(parity, self.t)
+    def differentiate_even_layer(self, start_layer: list[np.ndarray] = None, left_matrix=None) -> np.ndarray:
+        if left_matrix is None:
+            left_matrix = self.odd @ self.Href @ self.odd
+        return self._differentiate_layer(0, left_matrix, start_layer)
+
+    def _differentiate_layer(self, parity, left_matrix, start_layer: list[np.ndarray] = None) -> np.ndarray:
+        derivation = np.zeros((4, 4), dtype="complex")
+        single_V = None
+        if start_layer is not None:
+            layer = start_layer
+            # TODO: Generalize
+            single_V = start_layer[0]
+        else:
+            layer = self.simulation.get_hamiltonian_layer(parity, self.t)
         if parity == 1:
             k_range = range(len(layer)) if self.N % 2 == 0 else range(len(layer) - 1)
         else:
@@ -103,11 +106,10 @@ class Optimization:
             else:
                 k_range = range(1, len(layer) - 1)
         for k in k_range:
-            print(k)
             if parity == 0:
-                V = self.get_segmented_V(k, layer, self.t)
+                V = self.get_segmented_V(k, layer, self.t, single_V=single_V)
             else:
-                V = self.get_segmented_V(k, layer, self.t / 2)
+                V = self.get_segmented_V(k, layer, self.t / 2, single_V=single_V)
 
             left_tensor = np.reshape(left_matrix, self._get_left_tensor_shape(V))
             partial_derivation = self.differentiate_kth_hamiltonian(left_matrix, left_tensor, V)
@@ -119,13 +121,15 @@ if __name__ == "__main__":
     N = 6
     simulation = Simulation(N, 0.01, 5, 2, False)
     # TODO: Are the times correct?
-    optimization = Optimization(simulation, 0.01)
-    print(optimization.differentiate_odd_layer().T)
+    differentiation = Derivation(simulation, 0.01)
+    odd_gradient = differentiation.differentiate_odd_layer()
+    # print(odd_gradient)
 
     single_V = np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + np.kron(Z, np.eye(2))
     single_V = expm(single_V * -1j * 0.01 / 2)
-    f = lambda v: np.trace(optimization.even @ optimization.odd @ optimization.Href @ kron((v, v, v)))
+    f = lambda v: np.trace(differentiation.even @ differentiation.odd @ differentiation.Href @ kron((v, v, v)))
     print("---------------")
-    print(eval_numerical_gradient(f, single_V, h=1e-6))
-    # TODO: Check switched dimensions
-    # Transposing helps. Why?
+    # print(eval_numerical_gradient(f, single_V, h=1e-6).T)
+
+    print(np.linalg.norm(differentiation.odd @ differentiation.even @ kron(
+        (single_V, single_V, single_V)) - differentiation.Href))  # should be close to zero

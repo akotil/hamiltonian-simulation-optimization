@@ -68,6 +68,14 @@ class Simulation:
         return hamiltonian
 
     def get_parity_hamiltonian(self, t: float, parity: int) -> np.ndarray:
+        '''
+        Returns the matrix corresponding to one layer of the given parity.
+
+        :param t: time in seconds
+        :param parity: 0 if the layer is even, 1 otherwise
+        :return: (2**self.N, 2**self.N) - sized layer unitary corresponding to the given parity
+        '''
+
         hamiltonian_product = np.eye(2 ** self.N)
         if parity == 0:
             # calculate the Hamiltonian for even terms
@@ -198,7 +206,7 @@ if __name__ == "__main__":
     # plot_r_graph(epsilon)
     plot_error(3, 5)
 
-    simulation = Simulation(N, T, math.ceil(r_2k), 2 * k, True)
+    simulation = Simulation(N, T, math.ceil(r_2k), 2 * k, False)
     trotterization = simulation.simulate()
     exact_sol = simulation.get_exact_solution()
 

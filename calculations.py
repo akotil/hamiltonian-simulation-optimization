@@ -34,6 +34,15 @@ class Derivation:
             no_wires_V1, no_wires_V2 = int(np.log2(V_1.shape[0])), int(np.log2(V_2.shape[0]))
             return 2 ** no_wires_V1, 4, 2 ** no_wires_V2, 2 ** no_wires_V1, 4, 2 ** no_wires_V2
 
+
+    def check_correctness(self, partial_derivation, V_1, V_2):
+        # check the correctness of the differentiation
+        single_V = np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + np.kron(Z, np.eye(2))
+        single_V = expm(single_V * -1j * self.t / 2)
+        check_trace = np.tensordot(partial_derivation, single_V, axes=([0, 1], [1, 0]))
+        ref_trace = np.trace(left_matrix @ (np.kron(np.kron(V_1, single_V), V_2)))
+        assert np.allclose(ref_trace, check_trace)
+
     def differentiate_kth_hamiltonian(self, left_matrix, left_tensor: np.ndarray,
                                       V: Tuple[np.ndarray, np.ndarray, np.ndarray]) -> np.ndarray:
         V_1, single_V, V_2 = V
@@ -50,14 +59,7 @@ class Derivation:
         if type(V_2) != int:
             partial_derivation = np.tensordot(partial_derivation, V_2, axes=([1, 3], [1, 0]))
 
-        # check the correctness of the differentiation
-        single_V = np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + np.kron(Z, np.eye(2))
-        single_V = expm(single_V * -1j * self.t / 2)
-        check_trace = np.tensordot(partial_derivation, single_V, axes=([0, 1], [1, 0]))
-        ref_trace = np.trace(left_matrix @ (np.kron(np.kron(V_1, single_V), V_2)))
-        # print("Calculated trace: ", check_trace)
-        # print("Reference trace: ", ref_trace)
-        assert np.allclose(ref_trace, check_trace)
+        #self.check_correctness(partial_derivation, V_1, V_2)
         return partial_derivation
 
     def get_segmented_V(self, k: int, layer: [np.ndarray], t: float, single_V: np.ndarray =
@@ -103,6 +105,9 @@ class Derivation:
                 k_range = range(1, len(layer))
             elif self.simulation.periodic:
                 k_range = range(len(layer))
+                left_matrix = np.reshape(left_matrix, (2, 2**(self.N-1), 2, 2**(self.N-1)))
+                left_matrix = np.transpose(left_matrix, (1,0,3,2))
+                left_matrix = np.reshape(left_matrix, (2**self.N, 2**self.N))
             else:
                 k_range = range(1, len(layer) - 1)
         for k in k_range:
@@ -119,17 +124,20 @@ class Derivation:
 
 if __name__ == "__main__":
     N = 6
-    simulation = Simulation(N, 0.01, 5, 2, False)
+    simulation = Simulation(N, 0.01, 5, 2, True)
     # TODO: Are the times correct?
     differentiation = Derivation(simulation, 0.01)
-    odd_gradient = differentiation.differentiate_odd_layer()
-    # print(odd_gradient)
+    gradient = differentiation.differentiate_even_layer()
+    print(gradient)
 
     single_V = np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + np.kron(Z, np.eye(2))
-    single_V = expm(single_V * -1j * 0.01 / 2)
-    f = lambda v: np.trace(differentiation.even @ differentiation.odd @ differentiation.Href @ kron((v, v, v)))
-    print("---------------")
-    # print(eval_numerical_gradient(f, single_V, h=1e-6).T)
+    single_V = expm(single_V * -1j * 0.01)
 
-    print(np.linalg.norm(differentiation.odd @ differentiation.even @ kron(
-        (single_V, single_V, single_V)) - differentiation.Href))  # should be close to zero
+    left_matrix = differentiation.odd @ differentiation.Href @ differentiation.odd
+    left_matrix = np.reshape(left_matrix, (2, 2 ** (N - 1), 2, 2 ** (N - 1)))
+    left_matrix = np.transpose(left_matrix, (1, 0, 3, 2))
+    left_matrix = np.reshape(left_matrix, (2 ** N, 2 ** N))
+    f = lambda v: np.trace(left_matrix @ kron((v, v, v)))
+    print("---------------")
+    print(eval_numerical_gradient(f, single_V, h=1e-6).T)
+

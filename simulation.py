@@ -19,6 +19,9 @@ class Simulation:
         self.r = r
         self.order = order
         self.periodic = periodic_boundary
+        self.layer_unitaries = []
+        self.layers = []
+        self.Href = self.get_exact_solution()
 
     def simulate(self):
         return self.get_segmented_trotterization()
@@ -56,7 +59,7 @@ class Simulation:
 
     def get_block_hamiltonian(self, k: int, t: float) -> np.ndarray:
         exponent = lambda h: (np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + h * np.kron(Z, np.eye(2)))
-        # TODO: Temporarily fixed the h coefficient
+        # TODO: Temporarily disabled h
         exponential = expm(exponent(1) * -1j * t)
         identity_1 = np.eye(2 ** k) if k > 0 else 1
         identity_2 = np.eye(2 ** (self.N - k - 2)) if k < self.N - 2 else 1
@@ -79,12 +82,11 @@ class Simulation:
         hamiltonian_product = np.eye(2 ** self.N)
         if parity == 0:
             # calculate the Hamiltonian for even terms
-            # TODO: Add the last Hamiltanian here, add to the upper bound
             for k in range(1, math.ceil(self.N / 2)):
                 hamiltonian_product = hamiltonian_product @ self.get_block_hamiltonian(2 * k - 1, t)
             if self.periodic and self.N % 2 == 0:
                 coupling = lambda pauli: np.kron(np.kron(pauli, np.eye(2 ** (self.N - 2))), pauli)
-                # TODO: coefficients are disabled
+                # TODO: Temporarily disabled h
                 periodic_exponent = coupling(X) + coupling(Y) + coupling(Z) + 1 * np.kron(Z, np.eye(2 ** (self.N - 1)))
                 hamiltonian_product = hamiltonian_product @ expm(periodic_exponent * -1j * t)
         else:
@@ -94,14 +96,19 @@ class Simulation:
 
         return hamiltonian_product
 
-    def get_second_order_trotterization(self, t: float) -> np.ndarray:
+    def _get_second_order_trotterization(self, t: float) -> np.ndarray:
         odd_H = self.get_parity_hamiltonian(t / 2, 1)
         even_H = self.get_parity_hamiltonian(t, 0)
+        exponent = (np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + 1 * np.kron(Z, np.eye(2)))
+        exponential = lambda param: expm(exponent * -1j * param)
+        # TODO: This way, in order to use the optimization, we need to start the simulation first. Change it maybe?
+        self.layer_unitaries.append((exponential(t / 2), exponential(t), exponential(t / 2)))
+        self.layers.append((odd_H, even_H, odd_H))
         return odd_H @ even_H @ odd_H
 
     def get_kth_order_trotterization(self, t: float, order: int):
         if order == 2:
-            return self.get_second_order_trotterization(t)
+            return self._get_second_order_trotterization(t)
         else:
             k = order / 2
             p_k = self.get_pk(k)
@@ -119,20 +126,19 @@ class Simulation:
         return result
 
     def get_exact_solution(self) -> np.ndarray:
-        # TODO: Extend the exact solution by the last Hamiltonian
         ref_sol: np.ndarray
         kron_sum = lambda h: np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + h * np.kron(Z, np.eye(2))
         hamiltonian = 0
         for k in range(self.N - 1):
             identity_1 = np.eye(2 ** k) if k > 0 else 1
             identity_2 = np.eye(2 ** (self.N - k - 2)) if k < self.N - 2 else 1
-            # TODO: Temporarily disable h
+            # TODO: Temporarily disabled h
             term = np.kron(np.kron(identity_1, kron_sum(1)), identity_2)
             hamiltonian += term
 
         if self.periodic:
             coupling = lambda pauli: np.kron(np.kron(pauli, np.eye(2 ** (self.N - 2))), pauli)
-            # TODO: coefficients are disabled
+            # TODO: Temporarily disabled h
             hamiltonian += coupling(X) + coupling(Y) + coupling(Z) + 1 * np.kron(Z, np.eye(2 ** (self.N - 1)))
 
         ref_sol = expm(-1j * hamiltonian * self.T)

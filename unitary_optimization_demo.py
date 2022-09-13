@@ -1,34 +1,44 @@
-import numpy as np
-from scipy.linalg import expm
+import pickle
+
 import matplotlib.pyplot as plt
+
 from calculations import Derivation
 from simulation import Simulation
 from utils import *
-from gradient_check import eval_numerical_gradient
-import pickle
 
 
 class Optimization:
     def __init__(self, simulation: Simulation, derivation: Derivation):
         self.N = simulation.N
         self.simulation = simulation
-        self.non_optimized_unitary_blocks = simulation.layer_unitaries[:len(simulation.layer_unitaries)/simulation.r]  # to be optimized unitaries fom every layer as a block of odd even odd unitaries
-        self.non_optimized_layers = simulation.layers[:len(simulation.layer_unitaries)/simulation.r]
-        self.optimized_unitary = np.eye(2 ** self.N,
-                                        2 ** self.N)  # the matrix which corresponds to the already optimized layers
-        self.unoptimized_unitary = self.get_unoptimized_unitary()
-        self.derivation = derivation
+        self.non_optimized_unitary_blocks = simulation.layer_unitaries[:int(len(simulation.layer_unitaries) / simulation.r)]  # to be optimized unitaries fom every layer as a block of odd even odd unitaries
+        self.unoptimized_layers = self.get_unoptimized_layers()
+        self.deriv = derivation
 
-    def get_unoptimized_unitary(self):
-        unoptimized_unitary = np.eye(self.N**2, self.N**2)
-        for idx, unitary_block in enumerate(self.non_optimized_layers):
-            odd_layer_1, even_layer, odd_layer_2 = unitary_block
-            if idx == 0:
-                # if it is the first unitary block, do not include the first odd layer as it will be the first unitary that will be optimized
-                unoptimized_unitary = unoptimized_unitary @ even_layer @ odd_layer_2
+    def get_unoptimized_layers(self):
+        # TODO: Change the names
+        unoptimized_layers = [np.eye(2**self.N)]
+
+        non_optimized_layers = self.simulation.layers[:int(len(self.simulation.layer_unitaries) / self.simulation.r)]
+        for i in range(len(non_optimized_layers) - 1, -1, -1):
+            odd_layer_1, even_layer, odd_layer_2 = non_optimized_layers[i]
+            if i != len(non_optimized_layers) - 1:
+                previous = unoptimized_layers[len(unoptimized_layers) - 1]
             else:
-                unoptimized_unitary = odd_layer_1 @ even_layer @ odd_layer_2
+                previous = np.eye(2 ** self.N)
 
+            d1 = odd_layer_2 @ previous
+            d2 = even_layer @ d1
+            d3 = odd_layer_1 @ d2
+
+            unoptimized_layers.append(d1)
+            unoptimized_layers.append(d2)
+            if i != 0:
+                unoptimized_layers.append(d3)
+            else:
+                pass
+
+        return list(reversed(unoptimized_layers))
 
     def plot_optimization(self, diff_norm_arr, grad_norm_arr, title):
         plt.plot(diff_norm_arr, label="Diff. norm")
@@ -41,52 +51,40 @@ class Optimization:
         plt.title(title)
         plt.show()
 
-    def optimize_even_layer(self, time_step, U, deriv: Derivation, first_odd):
-        first_odd = kron((first_odd, first_odd, first_odd))
+    def optimize_even_layer(self, time_step, U, left_circuit, right_circuit):
         f = lambda v: np.real(np.trace((-2 * self.simulation.Href.conj().T +
-                                        (first_odd @ self.reshape_even_layer(v) @ deriv.odd).conj().T) @
-                                       first_odd @ self.reshape_even_layer(v) @ deriv.odd))
+                                        (left_circuit @ self.reshape_even_layer(v) @ right_circuit).conj().T) @
+                                       left_circuit @ self.reshape_even_layer(v) @ right_circuit))
 
         diff_norm = lambda v: np.linalg.norm(
-            first_odd @ self.reshape_even_layer(v) @ deriv.odd - self.simulation.Href)
+            left_circuit @ self.reshape_even_layer(v) @ right_circuit - self.simulation.Href)
 
-        start_layer_func = lambda Uopt: [np.eye(2)] + [Uopt] * 2 + [np.eye(2)] if not self.simulation.periodic else [Uopt] * 3
-        left_matrix = deriv.odd @ (-2 * self.simulation.Href.conj().T) @ first_odd
+        start_layer_func = lambda Uopt: [np.eye(2)] + [Uopt] * 2 + [np.eye(2)] if not self.simulation.periodic else [
+                                                                                                                        Uopt] * 3
+        left_matrix = right_circuit @ (-2 * self.simulation.Href.conj().T) @ left_circuit
         derivative_func = lambda Uopt: 4 * 2 * np.trace(
             Uopt.conj().T @ Uopt) * 2 * Uopt if not self.simulation.periodic else 3 * (
                 np.trace(Uopt.conj().T @ Uopt) ** 2) * 2 * Uopt
-        return self.optimize(U, deriv, diff_norm, start_layer_func, left_matrix, derivative_func, "Even optimization", False,
-                        time_step, f)
+        return self.optimize(U, diff_norm, start_layer_func, left_matrix, derivative_func, "Even optimization", False,
+                             time_step, f)
 
-    def optimize_odd_layer(self, time_step, U, deriv: Derivation, left_circuit, right_circuit):
-        if is_first_layer:
-            f = lambda v: np.real(np.trace((-2 * self.simulation.Href.conj().T +
-                                            (kron((v, v, v)) @ deriv.even @ deriv.odd).conj().T) @
-                                           kron((v, v, v)) @ deriv.even @ deriv.odd))
-            diff_norm = lambda v: np.linalg.norm(
-                kron((v, v,
-                      v)) @ deriv.even @ deriv.odd - self.simulation.Href)
-            left_matrix = deriv.even @ deriv.odd @ (-2 * deriv.Href.conj().T)
-        else:
-            first_odd, even = previous_layers
-            first_odd = kron((first_odd, first_odd, first_odd))
-            even = self.reshape_even_layer(even)
-            f = lambda v: np.real(np.trace((-2 * self.simulation.Href.conj().T +
-                                            (first_odd @ even @ kron((v, v, v))).conj().T) @
-                                           first_odd @ even @ kron((v, v, v))))
-            diff_norm = lambda v: np.linalg.norm(
-                first_odd @ even @ kron(
-                    (v, v, v)) - self.simulation.Href)
-            left_matrix = (-2 * self.simulation.Href.conj().T) @ first_odd @ even
+    def optimize_odd_layer(self, time_step, U, left_circuit, right_circuit):
+        f = lambda v: np.real(np.trace((-2 * self.simulation.Href.conj().T +
+                                        (left_circuit @ kron((v, v, v)) @ right_circuit).conj().T) @
+                                       left_circuit @ kron((v, v, v)) @ right_circuit))
+        diff_norm = lambda v: np.linalg.norm(left_circuit @
+                                             kron((v, v,
+                                                   v)) @ right_circuit - self.simulation.Href)
+        left_matrix = right_circuit @ (-2 * self.simulation.Href.conj().T) @ left_circuit
 
-        title = "First odd layer optimization" if is_first_layer else "Second odd layer optimization"
+        title = "Odd layer optimization"
         start_layer_func = lambda Uopt: [Uopt] * 3
         derivative_func = lambda Uopt: 3 * (np.trace(Uopt.conj().T @ Uopt) ** 2) * 2 * Uopt
-        return self.optimize(U, deriv, diff_norm, start_layer_func, left_matrix, derivative_func, title, True, time_step)
+        return self.optimize(U, diff_norm, start_layer_func, left_matrix, derivative_func, title, True, time_step)
 
     def get_eta(self, time_step):
         if time_step >= 0.5:
-            return 1e-6
+            return 1e-5
         if time_step >= 0.4:
             return 1e-5
         if time_step >= 0.3:
@@ -95,7 +93,7 @@ class Optimization:
             return 5e-5
         return 1e-2
 
-    def optimize(self, U, deriv, diff_norm, start_layer_func, left_matrix, derivative_func, title, is_odd, time_step,
+    def optimize(self, U, diff_norm, start_layer_func, left_matrix, derivative_func, title, is_odd, time_step,
                  f=None):
         eta = self.get_eta(time_step)
         Uopt = U.copy()
@@ -104,9 +102,9 @@ class Optimization:
         for k in range(5000):
             print("Diff. Norm: ", diff_norm(Uopt))
             if is_odd:
-                G = deriv.differentiate_odd_layer(start_layer=start_layer_func(Uopt), left_matrix=left_matrix).T
+                G = self.deriv.differentiate_odd_layer(start_layer=start_layer_func(Uopt), left_matrix=left_matrix).T
             else:
-                G = deriv.differentiate_even_layer(start_layer=start_layer_func(Uopt), left_matrix=left_matrix).T
+                G = self.deriv.differentiate_even_layer(start_layer=start_layer_func(Uopt), left_matrix=left_matrix).T
             G += derivative_func(Uopt)
             G = G.real
             if not is_odd:
@@ -135,45 +133,27 @@ class Optimization:
             matrix = kron((np.eye(2), even_V, even_V, np.eye(2)))
         return np.reshape(matrix, (2 ** self.N, 2 ** self.N))
 
-    def optimize_trotterization(self, deriv: Derivation, time_step: float, r: int):
-        '''
-        time_step = pickle.load(open("time_step", "rb"))
-
-        circuit = np.eye(2 ** N)
-        for segment in range(r):
-            circuit = circuit @ time_step
-
-        return circuit
-        '''
+    def optimize_trotterization(self, time_step: float, r: int):
         file_name = "btime_step_" + str(round(time_step, 2))
         try:
-            step_brick = pickle.load(open(file_name, "rb"))
+            optimized_unitary = pickle.load(open(file_name, "rb"))
         except (OSError, IOError) as e:
-            # TODO: When to divide time step by 2?
-            # TODOS:
-            # TODO: in simulation, find a way to store one single matrix from every layer
-            # TODO: in simulation, find a way to mark which unitary belongs to which layer (odd or even)
-            # 1. TODO: singleV is to be accessed from non optimized layers
-            # 2. TODO: in a loop, we go through layers and as we optimize each layer, we update the optimized unitary
-            # 3. TODO: rework trace derivative: what is now left_matrix?
-            for unitary_block, layer in zip(self.non_optimized_unitary_blocks, self.non_optimized_layers):
+            optimized_unitary = np.eye(2 ** self.N)
+            for idx, unitary_block in enumerate(self.non_optimized_unitary_blocks):
                 U_odd_1, U_even, U_odd_2 = unitary_block
-                opt_odd_1 = self.optimize_odd_layer(time_step, U_odd_1, deriv, True)
-                opt_even =
-                opt_odd_2 =
+                opt_odd_1 = self.optimize_odd_layer(time_step, U_odd_1, left_circuit=optimized_unitary,
+                                                    right_circuit=self.unoptimized_layers[idx * 3])
+                optimized_unitary = optimized_unitary @ kron((opt_odd_1, opt_odd_1, opt_odd_1))
+                opt_even = self.optimize_even_layer(time_step, U_even, left_circuit=optimized_unitary,
+                                                   right_circuit=self.unoptimized_layers[idx * 3 + 1])
+                optimized_unitary = optimized_unitary @ self.reshape_even_layer(opt_even)
+                opt_odd_2 = self.optimize_odd_layer(time_step, U_odd_2, left_circuit=optimized_unitary,
+                                                    right_circuit=self.unoptimized_layers[idx * 3 + 2])
+                optimized_unitary = optimized_unitary @ kron((opt_odd_2, opt_odd_2, opt_odd_2))
 
-            first_odd_V = self.optimize_odd_layer(time_step, single_V, deriv, True)
-            even_V = self.optimize_even_layer(time_step, single_V, deriv, first_odd_V)
-            second_odd_V = self.optimize_odd_layer(time_step, single_V, deriv, False, (first_odd_V, even_V))
+            pickle.dump(optimized_unitary, open(file_name, "wb"))
 
-            even_layer = self.reshape_even_layer(even_V)
-            step_brick = kron((first_odd_V, first_odd_V, first_odd_V)) @ even_layer @ kron(
-                (second_odd_V, second_odd_V, second_odd_V))
-            pickle.dump(step_brick, open(file_name, "wb"))
-
-        circuit = np.eye(2 ** self.N)
-        for segment in range(r):
-            circuit = circuit @ step_brick
+        circuit = optimized_unitary ** r
 
         return circuit
 
@@ -234,11 +214,13 @@ def compare():
 
 if __name__ == '__main__':
     # plot_comparison()
-    step_simulation = Simulation(6, 0.1, 1, 2, True)
-    deriv = Derivation(step_simulation, 0.1)
-    '''
-        trotterization = step_simulation.simulate()
-    optimized_trotterization = optimize_trotterization(deriv, 0.1, 1, 6)
+    step_simulation = Simulation(6, T=0.6, r=1, order=4, periodic_boundary=False)
+    derivv = Derivation(step_simulation, t=0.6)
+    # step simulation must be done first in order to initalize the non optimized unitaries and layers!
+    trotterization = step_simulation.simulate()
+
+    optimization = Optimization(step_simulation, derivv)
+    optimized_trotterization = optimization.optimize_trotterization(time_step=0.6, r=1)
     exact_solution = step_simulation.get_exact_solution()
 
     print("Difference between trotterization and exact solution:", np.linalg.norm(trotterization - exact_solution))
@@ -254,3 +236,4 @@ if __name__ == '__main__':
     print(np.linalg.norm(exact - test))
     print(exact - test)
     print(test)
+    '''

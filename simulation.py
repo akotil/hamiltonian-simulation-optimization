@@ -96,32 +96,32 @@ class Simulation:
 
         return hamiltonian_product
 
-    def _get_second_order_trotterization(self, t: float) -> np.ndarray:
+    def _get_second_order_trotterization(self, t: float, power) -> np.ndarray:
         odd_H = self.get_parity_hamiltonian(t / 2, 1)
         even_H = self.get_parity_hamiltonian(t, 0)
         exponent = (np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + 1 * np.kron(Z, np.eye(2)))
         exponential = lambda param: expm(exponent * -1j * param)
         # TODO: This way, in order to use the optimization, we need to start the simulation first. Change it maybe?
-        self.layer_unitaries.append((exponential(t / 2), exponential(t), exponential(t / 2)))
-        self.layers.append((odd_H, even_H, odd_H))
+        self.layers.extend([(odd_H, even_H, odd_H)] * power)
+        self.layer_unitaries.extend([(exponential(t / 2), exponential(t), exponential(t / 2))] * power)
         return odd_H @ even_H @ odd_H
 
-    def get_kth_order_trotterization(self, t: float, order: int):
+    def get_kth_order_trotterization(self, t: float, order: int, power: int):
         if order == 2:
-            return self._get_second_order_trotterization(t)
+            return self._get_second_order_trotterization(t, power)
         else:
             k = order / 2
             p_k = self.get_pk(k)
-            t_1 = matrix_power(self.get_kth_order_trotterization(p_k * t, 2 * k - 2), 2)
-            t_2 = self.get_kth_order_trotterization((1 - 4 * p_k) * t, 2 * k - 2)
-            t_3 = matrix_power(self.get_kth_order_trotterization(p_k * t, 2 * k - 2), 2)
+            t_1 = matrix_power(self.get_kth_order_trotterization(p_k * t, 2 * k - 2, 2 * power), 2)
+            t_2 = self.get_kth_order_trotterization((1 - 4 * p_k) * t, 2 * k - 2, power)
+            t_3 = matrix_power(self.get_kth_order_trotterization(p_k * t, 2 * k - 2, 2 * power), 2)
             return t_1 @ t_2 @ t_3
 
     def get_segmented_trotterization(self):
         result = np.eye(2 ** self.N)
         for segment in range(self.r):
             print("\rSegment {}|{} is being processed.".format(segment + 1, self.r), end="")
-            result = result @ self.get_kth_order_trotterization(self.T / self.r, self.order)
+            result = result @ self.get_kth_order_trotterization(self.T / self.r, self.order, 1)
 
         return result
 

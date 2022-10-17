@@ -1,4 +1,7 @@
+import pickle
+
 import numpy as np
+from numpy.linalg import matrix_power
 
 X = np.array([[0, 1], [1, 0]])
 Y = np.array([[0, -1j], [1j, 0]])
@@ -6,26 +9,27 @@ Z = np.array([[1, 0], [0, -1]])
 
 
 def kron(elements):
-    kronecker_product = 1
-    for element in elements:
-        kronecker_product = np.kron(kronecker_product, element)
-    return kronecker_product
+    kron_prod = 1
+    for idx, elem in enumerate(elements):
+        if idx == 0:
+            kron_prod = elem
+        else:
+            shape = kron_prod.shape[0] * elem.shape[0]
+            kron_prod = np.einsum('ik,jl', kron_prod, elem).reshape(shape, shape)
+    return kron_prod
 
 
-def crandn(size):
-    """
-    Draw samples from the random complex standard normal distribution.
-    """
-    return (np.random.normal(size=size) + 1j * np.random.normal(size=size)) / np.sqrt(2)
+def build_whole_circuit(file_name, r, order=2):
+    optimized_unitaries = pickle.load(open(file_name, "rb"))
+    circuit = np.eye(2 ** 6) # TODO: Replace 6 with N
+    for idx, U in enumerate(optimized_unitaries):
+        if idx % 2 == 0:
+            layer = kron((U, U, U))
+        else:
+            layer = kron((np.eye(2), U, U, np.eye(2)))
+        circuit = circuit @ layer
 
-
-def random_unitary(n):
-    """
-    Construct a Haar random unitary matrix.
-    """
-    # TODO: Replace
-    return np.linalg.qr(crandn((n, n)))[0]
-
+    return matrix_power(circuit, r)
 
 def polar_decomp(A):
     """
@@ -49,10 +53,25 @@ def project_unitary_tangent(U, Z):
     """
     return U @ antisymm(U.conj().T @ Z)
 
+def eval_numerical_gradient(f, x, h=1e-5):
+    """
+    Approximate the numeric gradient of a function via
+    the difference quotient (f(x + h) - f(x - h)) / (2 h).
+    """
+    grad = np.zeros_like(x)
 
-# Alternative parametrization of a unitary matrix via matrix exponential
-def real_to_hermitian(X):
-    """
-    Convert a real square matrix to a complex Hermitian matrix.
-    """
-    return (np.tril(X) + np.tril(X, -1).T) + 1j * (np.triu(X, 1) - np.triu(X, 1).T)
+    # iterate over all indexes in x
+    it = np.nditer(x, flags=['multi_index'], op_flags=['readwrite'])
+    while not it.finished:
+        i = it.multi_index
+        xi_ref = x[i]
+        x[i] = xi_ref + h
+        fpos = f(x)         # evaluate f(x + h)
+        x[i] = xi_ref - h
+        fneg = f(x)         # evaluate f(x - h)
+        x[i] = xi_ref       # restore
+        # compute the partial derivative via centered difference quotient
+        grad[i] = (fpos - fneg) / (2 * h)
+        it.iternext() # step to next dimension
+
+    return grad

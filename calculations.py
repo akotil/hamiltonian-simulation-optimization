@@ -4,20 +4,13 @@ import numpy as np
 from scipy.linalg import expm
 
 from simulation import Simulation
-
-from gradient_check import eval_numerical_gradient
-
-from utils import X, Y, Z, kron
+from utils import X, Y, Z, kron, eval_numerical_gradient
 
 
-class Derivation:
-    def __init__(self, simulation: Simulation, t: float):
+class Derivative:
+    def __init__(self, simulation: Simulation):
         self.simulation = simulation
         self.N = simulation.N
-        self.t = t
-        self.even = simulation.get_parity_hamiltonian(t, 0)
-        self.odd = simulation.get_parity_hamiltonian(t / 2, 1)
-        self.Href = simulation.get_exact_solution()
 
     def _get_left_tensor_shape(self, V):
         V_1, single_V, V_2 = V
@@ -34,8 +27,7 @@ class Derivation:
             no_wires_V1, no_wires_V2 = int(np.log2(V_1.shape[0])), int(np.log2(V_2.shape[0]))
             return 2 ** no_wires_V1, 4, 2 ** no_wires_V2, 2 ** no_wires_V1, 4, 2 ** no_wires_V2
 
-
-    def check_correctness(self, partial_derivation, V_1, V_2):
+    def check_correctness(self, partial_derivation, V_1, V_2, left_matrix):
         # check the correctness of the differentiation
         single_V = np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + np.kron(Z, np.eye(2))
         single_V = expm(single_V * -1j * self.t / 2)
@@ -43,7 +35,7 @@ class Derivation:
         ref_trace = np.trace(left_matrix @ (np.kron(np.kron(V_1, single_V), V_2)))
         assert np.allclose(ref_trace, check_trace)
 
-    def differentiate_kth_hamiltonian(self, left_matrix, left_tensor: np.ndarray,
+    def differentiate_kth_hamiltonian(self, left_tensor: np.ndarray,
                                       V: Tuple[np.ndarray, np.ndarray, np.ndarray]) -> np.ndarray:
         V_1, single_V, V_2 = V
 
@@ -59,45 +51,41 @@ class Derivation:
         if type(V_2) != int:
             partial_derivation = np.tensordot(partial_derivation, V_2, axes=([1, 3], [1, 0]))
 
-        #self.check_correctness(partial_derivation, V_1, V_2)
+        # self.check_correctness(partial_derivation, V_1, V_2)
         return partial_derivation
 
-    def get_segmented_V(self, k: int, layer: [np.ndarray], t: float, single_V: np.ndarray =
-    None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def get_segmented_V(self, k: int, layer: [np.ndarray], single_V: np.ndarray = None) -> Tuple[
+        np.ndarray, np.ndarray, np.ndarray]:
         V_1, V_2 = 1, 1
+        '''
         for idx_1 in range(k):
-            V_1 = np.kron(V_1, layer[idx_1])
+            if idx_1 == 0:
+                V_1 = layer[idx_1]
+            else:
+                V_1 = kron((V_1, layer[idx_1]))
+        '''
+        V_1 = kron((layer[:k]))
+        '''
         for idx_2 in range(k + 1, len(layer)):
-            V_2 = np.kron(V_2, layer[idx_2])
-
-        if single_V is None:
-            # TODO: Can be extracted
-            single_V = np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + np.kron(Z, np.eye(2))
-            single_V = expm(single_V * -1j * t)
-
+            if idx_2 == k + 1:
+                V_2 = layer[idx_2]
+            else:
+                V_2 = kron((V_2, layer[idx_2]))
+        '''
+        V_2 = kron((layer[k + 1:]))
         return V_1, single_V, V_2
 
-    def differentiate_odd_layer(self, start_layer: list[np.ndarray] = None, left_matrix=None) -> np.ndarray:
-        if left_matrix is None:
-            left_matrix = self.even @ self.odd @ (
-                        -2 * (self.simulation.get_exact_solution() - kron(start_layer) @ self.even @ self.odd))
-
+    def differentiate_odd_layer(self, start_layer: list[np.ndarray], left_matrix) -> np.ndarray:
         return self._differentiate_layer(1, left_matrix, start_layer)
 
-    def differentiate_even_layer(self, start_layer: list[np.ndarray] = None, left_matrix=None) -> np.ndarray:
-        if left_matrix is None:
-            left_matrix = self.odd @ self.Href @ self.odd
+    def differentiate_even_layer(self, start_layer: list[np.ndarray], left_matrix) -> np.ndarray:
         return self._differentiate_layer(0, left_matrix, start_layer)
 
-    def _differentiate_layer(self, parity, left_matrix, start_layer: list[np.ndarray] = None) -> np.ndarray:
+    def _differentiate_layer(self, parity, left_matrix, start_layer: list[np.ndarray]) -> np.ndarray:
         derivation = np.zeros((4, 4), dtype="complex")
-        single_V = None
-        if start_layer is not None:
-            layer = start_layer
-            # TODO: Generalize
-            single_V = start_layer[0]
-        else:
-            layer = self.simulation.get_hamiltonian_layer(parity, self.t)
+        layer = start_layer
+        single_V = start_layer[0]  # Warning: This is due to the fact that a layer consists of identical gates
+
         if parity == 1:
             k_range = range(len(layer)) if self.N % 2 == 0 else range(len(layer) - 1)
         else:
@@ -105,39 +93,40 @@ class Derivation:
                 k_range = range(1, len(layer))
             elif self.simulation.periodic:
                 k_range = range(len(layer))
-                left_matrix = np.reshape(left_matrix, (2, 2**(self.N-1), 2, 2**(self.N-1)))
-                left_matrix = np.transpose(left_matrix, (1,0,3,2))
-                left_matrix = np.reshape(left_matrix, (2**self.N, 2**self.N))
+                left_matrix = np.reshape(left_matrix, (2, 2 ** (self.N - 1), 2, 2 ** (self.N - 1)))
+                left_matrix = np.transpose(left_matrix, (1, 0, 3, 2))
+                left_matrix = np.reshape(left_matrix, (2 ** self.N, 2 ** self.N))
             else:
                 k_range = range(1, len(layer) - 1)
         for k in k_range:
-            if parity == 0:
-                V = self.get_segmented_V(k, layer, self.t, single_V=single_V)
-            else:
-                V = self.get_segmented_V(k, layer, self.t / 2, single_V=single_V)
-
+            V = self.get_segmented_V(k, layer, single_V=single_V)
             left_tensor = np.reshape(left_matrix, self._get_left_tensor_shape(V))
-            partial_derivation = self.differentiate_kth_hamiltonian(left_matrix, left_tensor, V)
+            partial_derivation = self.differentiate_kth_hamiltonian(left_tensor, V)
             derivation += partial_derivation
         return derivation
 
 
 if __name__ == "__main__":
-    N = 6
-    simulation = Simulation(N, 0.01, 5, 2, True)
-    # TODO: Are the times correct?
-    differentiation = Derivation(simulation, 0.01)
-    gradient = differentiation.differentiate_even_layer()
-    print(gradient)
+    test_N = 6
+    t = 0.01
+    test_sim = Simulation(N=6, T=t, r=1, order=2, periodic_boundary=True)
+    test_derv = Derivative(test_sim)
 
-    single_V = np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + np.kron(Z, np.eye(2))
-    single_V = expm(single_V * -1j * 0.01)
+    test_V = np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + np.kron(Z, np.eye(2))
+    test_V = expm(test_V * -1j * t)
 
-    left_matrix = differentiation.odd @ differentiation.Href @ differentiation.odd
-    left_matrix = np.reshape(left_matrix, (2, 2 ** (N - 1), 2, 2 ** (N - 1)))
-    left_matrix = np.transpose(left_matrix, (1, 0, 3, 2))
-    left_matrix = np.reshape(left_matrix, (2 ** N, 2 ** N))
-    f = lambda v: np.trace(left_matrix @ kron((v, v, v)))
-    print("---------------")
-    print(eval_numerical_gradient(f, single_V, h=1e-6).T)
 
+    def reorder(layer):
+        layer = np.reshape(layer, (2, 2 ** (6 - 1), 2, 2 ** (6 - 1)))
+        layer = np.transpose(layer, (1, 0, 3, 2))
+        layer = np.reshape(layer, (2 ** 6, 2 ** 6))
+        return layer
+
+
+    odd_layer = test_sim.get_parity_hamiltonian(t / 2, 1)
+    f = lambda test_V: np.trace(odd_layer @ reorder(kron((test_V, test_V, test_V))) @ odd_layer @ test_sim.Href)
+
+    exact_gradient = eval_numerical_gradient(f, test_V, h=1e-6)
+    tn_gradient = test_derv.differentiate_even_layer([test_V] * 3, left_matrix=odd_layer @ test_sim.Href @ odd_layer)
+
+    print(np.allclose(exact_gradient, tn_gradient))

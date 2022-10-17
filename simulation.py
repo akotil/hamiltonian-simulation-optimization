@@ -1,10 +1,11 @@
 import math
-import random
 
 import matplotlib.pyplot as plt
 import numpy as np
 from numpy.linalg import matrix_power, norm
 from scipy.linalg import expm
+
+from utils import kron
 
 X = np.array([[0, 1], [1, 0]])
 Y = np.array([[0, -1j], [1j, 0]])
@@ -22,9 +23,8 @@ class Simulation:
         self.layer_unitaries = []
         self.layers = []
         self.Href = self.get_exact_solution()
-
-    def simulate(self):
-        return self.get_segmented_trotterization()
+        self.params = []
+        self.trotterization = self.get_segmented_trotterization()
 
     def get_single_hamiltonian(self, k: int, t: float) -> np.ndarray:
         exponent = lambda h: (np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + h * np.kron(Z, np.eye(2)))
@@ -38,7 +38,6 @@ class Simulation:
 
         :return: A list of ndarrays corresponding to even/odd Hamiltonians belonging to the same circuit layer.
         """
-        # TODO: Coefficients differ and we have different Vs
         V = np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + np.kron(Z, np.eye(2))
         V = expm(V * -1j * t)
         layer = [V] * (math.ceil(self.N / 2) - 1) if parity == 0 else [V] * (math.floor(self.N / 2))
@@ -59,12 +58,11 @@ class Simulation:
 
     def get_block_hamiltonian(self, k: int, t: float) -> np.ndarray:
         exponent = lambda h: (np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + h * np.kron(Z, np.eye(2)))
-        # TODO: Temporarily disabled h
         exponential = expm(exponent(1) * -1j * t)
         identity_1 = np.eye(2 ** k) if k > 0 else 1
         identity_2 = np.eye(2 ** (self.N - k - 2)) if k < self.N - 2 else 1
 
-        hamiltonian = np.kron(np.kron(identity_1, exponential), identity_2)
+        hamiltonian = kron((identity_1, exponential, identity_2))
         assert hamiltonian.shape == (2 ** self.N, 2 ** self.N), \
             "The single Hamiltonian has wrong shape: {} with k : {}".format(hamiltonian.shape, k)
 
@@ -79,22 +77,26 @@ class Simulation:
         :return: (2**self.N, 2**self.N) - sized layer unitary corresponding to the given parity
         '''
 
-        hamiltonian_product = np.eye(2 ** self.N)
+        hamiltonian = np.eye(2 ** self.N)
         if parity == 0:
             # calculate the Hamiltonian for even terms
-            for k in range(1, math.ceil(self.N / 2)):
-                hamiltonian_product = hamiltonian_product @ self.get_block_hamiltonian(2 * k - 1, t)
             if self.periodic and self.N % 2 == 0:
-                coupling = lambda pauli: np.kron(np.kron(pauli, np.eye(2 ** (self.N - 2))), pauli)
-                # TODO: Temporarily disabled h
-                periodic_exponent = coupling(X) + coupling(Y) + coupling(Z) + 1 * np.kron(Z, np.eye(2 ** (self.N - 1)))
-                hamiltonian_product = hamiltonian_product @ expm(periodic_exponent * -1j * t)
+                for k in range(1, math.floor(self.N / 2) + 1):
+                    hamiltonian = hamiltonian @ self.get_block_hamiltonian(2 * k - 2, t)
+                hamiltonian = np.reshape(hamiltonian, (2, 2 ** (self.N - 1), 2, 2 ** (self.N - 1)))
+                hamiltonian = np.transpose(hamiltonian, (1, 0, 3, 2))
+                hamiltonian = np.reshape(hamiltonian, (2 ** self.N, 2 ** self.N))
+
+            else:
+                for k in range(1, math.ceil(self.N / 2)):
+                    hamiltonian = hamiltonian @ self.get_block_hamiltonian(2 * k - 1, t)
+
         else:
             # calculate the Hamiltonian for odd terms
             for k in range(1, math.floor(self.N / 2) + 1):
-                hamiltonian_product = hamiltonian_product @ self.get_block_hamiltonian(2 * k - 2, t)
+                hamiltonian = hamiltonian @ self.get_block_hamiltonian(2 * k - 2, t)
 
-        return hamiltonian_product
+        return hamiltonian
 
     def _get_second_order_trotterization(self, t: float, power) -> np.ndarray:
         odd_H = self.get_parity_hamiltonian(t / 2, 1)
@@ -104,6 +106,7 @@ class Simulation:
         # TODO: This way, in order to use the optimization, we need to start the simulation first. Change it maybe?
         self.layers.extend([(odd_H, even_H, odd_H)] * power)
         self.layer_unitaries.extend([(exponential(t / 2), exponential(t), exponential(t / 2))] * power)
+        self.params.extend([t / 2, t, t / 2] * power)
         return odd_H @ even_H @ odd_H
 
     def get_kth_order_trotterization(self, t: float, order: int, power: int):
@@ -118,12 +121,7 @@ class Simulation:
             return t_1 @ t_2 @ t_3
 
     def get_segmented_trotterization(self):
-        result = np.eye(2 ** self.N)
-        for segment in range(self.r):
-            print("\rSegment {}|{} is being processed.".format(segment + 1, self.r), end="")
-            result = result @ self.get_kth_order_trotterization(self.T / self.r, self.order, 1)
-
-        return result
+        return matrix_power(self.get_kth_order_trotterization(self.T / self.r, self.order, 1), self.r)
 
     def get_exact_solution(self) -> np.ndarray:
         ref_sol: np.ndarray
@@ -132,13 +130,11 @@ class Simulation:
         for k in range(self.N - 1):
             identity_1 = np.eye(2 ** k) if k > 0 else 1
             identity_2 = np.eye(2 ** (self.N - k - 2)) if k < self.N - 2 else 1
-            # TODO: Temporarily disabled h
             term = np.kron(np.kron(identity_1, kron_sum(1)), identity_2)
             hamiltonian += term
 
         if self.periodic:
             coupling = lambda pauli: np.kron(np.kron(pauli, np.eye(2 ** (self.N - 2))), pauli)
-            # TODO: Temporarily disabled h
             hamiltonian += coupling(X) + coupling(Y) + coupling(Z) + 1 * np.kron(Z, np.eye(2 ** (self.N - 1)))
 
         ref_sol = expm(-1j * hamiltonian * self.T)
@@ -146,6 +142,11 @@ class Simulation:
 
     def get_pk(self, k: int):
         return 1 / (4 - 4 ** (1 / (2 * k - 1)))
+
+    def plot_eigenvalues(self):
+        eigv = np.linalg.eigvals(self.get_exact_solution())
+        plt.plot(range(len(eigv)), eigv)
+        plt.show()
 
 
 def get_k(N: int, t: float, epsilon: float, k: int):
@@ -198,26 +199,3 @@ def plot_error(N: int, T: float):
     plt.yscale("log")
     plt.legend()
     plt.show()
-
-
-if __name__ == "__main__":
-    random.seed(22)
-    N = 4
-    T = 5
-    epsilon = 0.001
-    r_2k, k = get_k(N, T, epsilon, 2)
-    print("r: ", r_2k)
-    print("k: ", k)
-
-    # plot_r_graph(epsilon)
-    plot_error(3, 5)
-
-    simulation = Simulation(N, T, math.ceil(r_2k), 2 * k, False)
-    trotterization = simulation.simulate()
-    exact_sol = simulation.get_exact_solution()
-
-    norm = norm(exact_sol - trotterization)
-    print(norm)
-
-    print(np.trace(np.conj(trotterization).T @ exact_sol) - 2 ** N)
-    print(np.allclose(trotterization, exact_sol, atol=epsilon))

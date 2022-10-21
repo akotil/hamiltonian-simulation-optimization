@@ -5,6 +5,7 @@ from simulation import Simulation
 from utils import *
 from numpy.linalg import matrix_power
 from scipy.linalg import expm
+import seaborn as sns
 
 
 class Optimization:
@@ -47,12 +48,12 @@ class Optimization:
         for i in range(len(layers) - 1, -1, -1):
             current_layer = layers[i]
             if i != len(layers) - 1:
-                previous = unoptimized_layers[len(unoptimized_layers) - 1]
+                prev = unoptimized_layers[len(unoptimized_layers) - 1]
             else:
-                previous = np.eye(2 ** self.N)
+                prev = np.eye(2 ** self.N)
 
             if i != 0:
-                unoptimized_layers.append(current_layer @ previous)
+                unoptimized_layers.append(current_layer @ prev)
 
         return list(reversed(unoptimized_layers))
 
@@ -67,14 +68,15 @@ class Optimization:
 
     def optimize_even_layer(self, time_step, U, left_circuit, right_circuit):
         f = lambda v: np.real(np.trace((-2 * self.sim.Href.conj().T +
-                                        (left_circuit @ self.reshape_even_layer(v) @ right_circuit).conj().T) @
-                                       left_circuit @ self.reshape_even_layer(v) @ right_circuit))
+                                        (left_circuit @ reshape_even_layer(v, self.sim.periodic,
+                                                                           self.N) @ right_circuit).conj().T) @
+                                       left_circuit @ reshape_even_layer(v, self.sim.periodic, self.N) @ right_circuit))
 
         diff_norm = lambda v: np.linalg.norm(
-            left_circuit @ self.reshape_even_layer(v) @ right_circuit - self.sim.Href)
+            left_circuit @ reshape_even_layer(v, self.sim.periodic, self.N) @ right_circuit - self.sim.Href)
 
         start_layer_func = lambda Uopt: [np.eye(2)] + [Uopt] * 2 + [np.eye(2)] if not self.sim.periodic else [
-                                                                                                                        Uopt] * 3
+                                                                                                                 Uopt] * 3
         left_matrix = right_circuit @ (-2 * self.sim.Href.conj().T) @ left_circuit
         deriv_func = lambda Uopt: 4 * 2 * np.trace(
             Uopt.conj().T @ Uopt) * 2 * Uopt if not self.sim.periodic else 3 * (
@@ -92,51 +94,34 @@ class Optimization:
 
         start_layer_func = lambda Uopt: [Uopt] * 3
         deriv_func = lambda Uopt: 3 * (np.trace(Uopt.conj().T @ Uopt) ** 2) * 2 * Uopt
-        return self.optimize(U, diff_norm, start_layer_func, left_matrix, deriv_func, "Odd layer optimization", True, time_step)
+        return self.optimize(U, diff_norm, start_layer_func, left_matrix, deriv_func, "Odd layer optimization", True,
+                             time_step)
 
     def get_optimization_params(self, time_step):
-        if time_step >= 0.3:
-            return 1e-6, 5000
         if time_step >= 0.2:
-            return 1e-5, 2500
+            return 1e-7, 2500
         if time_step >= 0.1:
-            return 1e-4, 2500
-        return 1e-3, 2500
+            return 1e-6, 3000
+        if time_step <= 1e-6:
+            return 1e-2, 2500
+        return 1e-4, 2500
 
     def optimize(self, U, diff_norm, start_layer_func, left_matrix, derivative_func, title, is_odd, time_step,
                  f=None):
         eta, no_iter = self.get_optimization_params(time_step)
         Uopt = U.copy()
-        diff_norm_arr = []
-        grad_norm_arr = []
         for k in range(no_iter):
             if is_odd:
-                G = self.deriv.differentiate_odd_layer(start_layer=start_layer_func(Uopt), left_matrix=left_matrix).T
+                G = self.deriv.diff_odd_layer(start_layer=start_layer_func(Uopt), left_matrix=left_matrix).T
             else:
-                G = self.deriv.differentiate_even_layer(start_layer=start_layer_func(Uopt), left_matrix=left_matrix).T
+                G = self.deriv.diff_even_layer(start_layer=start_layer_func(Uopt), left_matrix=left_matrix).T
             G += derivative_func(Uopt)
             G = G.real
 
-            if not is_odd:
-                #print(np.allclose(eval_numerical_gradient(f, Uopt), G))
-                pass
-
             G = project_unitary_tangent(Uopt, G)
             Uopt = Uopt - eta * G
-            diff_norm_arr.append(diff_norm(Uopt))
-            grad_norm_arr.append(np.linalg.norm(G))
         Uopt = polar_decomp(Uopt)[0]
-        self.plot_optimization(diff_norm_arr, grad_norm_arr, title)
         return Uopt
-
-    def reshape_even_layer(self, even_V):
-        if self.sim.periodic:
-            matrix = kron((even_V, even_V, even_V))
-            matrix = np.reshape(matrix, (2, 2 ** (self.N - 1), 2, 2 ** (self.N - 1)))
-            matrix = np.transpose(matrix, (1, 0, 3, 2))
-            return np.reshape(matrix, (2 ** self.N, 2 ** self.N))
-        else:
-            return kron((np.eye(2), even_V, even_V, np.eye(2)))
 
     def unitaries_to_layers(self, unitaries):
         layers = []
@@ -144,7 +129,7 @@ class Optimization:
             if idx % 2 == 0:
                 layers.append(kron((U, U, U)))
             else:
-                layers.append(self.reshape_even_layer(U))
+                layers.append(reshape_even_layer(U, self.sim.periodic, self.N))
         return layers
 
     def optimize_trotterization(self, time_step: float, r: int, recycle: bool):
@@ -155,13 +140,14 @@ class Optimization:
             if recycle:
                 to_be_optimized_unitaries = pickle.load(open(file_name, "rb"))
                 unoptimized_layers = self.get_unoptimized_layers(self.unitaries_to_layers(to_be_optimized_unitaries))
+                diff_arr = pickle.load(open("bins/diff_arr_{}_{}_{}".format(round(time_step, 4), self.sim.order, self.sim.periodic), "rb"))
             else:
-                return build_whole_circuit(file_name, r)
+                return build_circuit_from_pickle(file_name, r, self.sim.periodic, self.N)
         except (OSError, IOError) as e:
             to_be_optimized_unitaries = self.non_optimized_unitaries
             unoptimized_layers = self.unoptimized_layers
-        diff_arr = []
-        for i in range(20):
+            diff_arr = []
+        for i in range(500):
             optimized_layers = []
             optimized_circuit = np.eye(2 ** self.N)
             unitaries = []
@@ -183,7 +169,7 @@ class Optimization:
                     # layer is even
                     U_opt = self.optimize_even_layer(time_step, unitary, left_circuit=optimized_circuit,
                                                      right_circuit=unoptimized_layers[idx])
-                    optimized_layer = self.reshape_even_layer(U_opt)
+                    optimized_layer = reshape_even_layer(U_opt, self.sim.periodic, self.N)
                     optimized_layers.append(optimized_layer)
                     optimized_circuit = optimized_circuit @ optimized_layer
                     unitaries.append(U_opt)
@@ -203,10 +189,9 @@ class Optimization:
 
         print("optimized step diff: ", np.linalg.norm(optimized_circuit - self.sim.Href))
         pickle.dump(to_be_optimized_unitaries, open(file_name, "wb"))
-        plt.plot(diff_arr)
         plt.show()
 
-        diff_file_name = "bins/diff_arr_" + str(round(time_step, 4))
+        diff_file_name = "bins/diff_arr_{}_{}_{}".format(str(round(time_step, 4)), self.sim.order, self.sim.periodic)
         pickle.dump(diff_arr, open(diff_file_name, "wb"))
 
         circuit = matrix_power(optimized_circuit, r)
@@ -259,7 +244,7 @@ class Optimization:
                                                                                             True),
                                                      right_circuit=self.get_right_symm_matrix(optimized_unitaries, idx,
                                                                                               False))
-                    optimized_unitaries.append(self.reshape_even_layer(U_opt))
+                    optimized_unitaries.append(reshape_even_layer(U_opt, self.sim.periodic, self.N))
                 else:
                     left_circuit_first_derv = self.get_left_symm_matrix(optimized_unitaries, idx, True)
                     left_circuit_sec_derv = self.get_left_symm_matrix(optimized_unitaries, idx, False)
@@ -284,7 +269,7 @@ class Optimization:
                                                            left_circuit=left_circuit_sec_derv,
                                                            right_circuit=right_circuit_sec_derv)
                         U_opt = U_opt_1 + U_opt_2
-                        optimized_unitaries.append(self.reshape_even_layer(U_opt_1))
+                        optimized_unitaries.append(reshape_even_layer(U_opt_1, self.sim.periodic, self.N))
 
             optimized_unitary = self.get_opt_unitary_from_symm_unitaries(optimized_unitaries)
             pickle.dump(optimized_unitary, open(file_name, "wb"))
@@ -293,33 +278,58 @@ class Optimization:
         return circuit
 
 
+def plot_error(N=6, T=1):
+    sns.set_theme(style='whitegrid', palette='deep')
+    K = [1]
+    R = [2 ** x for x in range(7, 5, -1)]
+    delta_t = [T / r for r in R]
+    print(delta_t)
+    colors = ["cadetblue"]
+    periodic = True
+    l1_handles = []
+    l2_handles = []
+    for k_idx, k in enumerate(K):
+        trott_err = []
+        opt_trot_err = []
+        for t_idx, t in enumerate(delta_t):
+            r = R[t_idx]
+            r = 1
+            sim = Simulation(N, t * r, r, k * 2, periodic)
+            exact_sol = sim.Href
+            trott_err.append(np.linalg.norm(sim.trotterization - exact_sol))
+
+            step_sim = Simulation(N, t, 1, k * 2, periodic)
+
+            print("non optimized step diff: ", np.linalg.norm(step_sim.Href - step_sim.trotterization))
+            print("non optimized overall diff: ", np.linalg.norm(sim.Href - sim.trotterization))
+            derivv = Derivative(N, periodic)
+            optimization = Optimization(step_sim, derivv)
+            opt_trotterization = optimization.optimize_trotterization(time_step=t, r=r, recycle=False)
+
+            print("optimized overall diff: ", np.linalg.norm(sim.Href - opt_trotterization))
+            opt_trot_err.append(np.linalg.norm(opt_trotterization - exact_sol))
+
+        l1, = plt.semilogy(delta_t, trott_err, label="$k={}$".format(k), color=colors[k_idx])
+        l2, = plt.semilogy(delta_t, opt_trot_err, label="opt.", linestyle="dashdot", color=colors[k_idx])
+        l1_handles.append(l1)
+        l2_handles.append(l2)
+
+    first_legend = plt.legend(handles=l1_handles, loc=2)
+    ax = plt.gca().add_artist(first_legend)
+    # l2_handles[0].legend.set_color("black")
+    second_legend = plt.legend(handles=[l2_handles[0], l1_handles[0]], labels=["optimized", "non-optimized"], loc=4)
+    second_legend.legendHandles[0].set_color('black')
+    second_legend.legendHandles[1].set_color('black')
+
+    plt.xlabel(r'$\Delta t$')
+    plt.ylabel("Error")
+
+    plt.title(r'$N={}, T=1s$'.format(N, T))
+    plt.savefig("plots/final-ver", dpi=400)
+    plt.show()
+
 
 if __name__ == '__main__':
-    # R = [2 ** x for x in range(9, 2, -1)]
-    # delta_t = [T / r for r in R]
-    T = 0.01
-    R = 1
-    t = T / R
-    order = 2
-    periodic = True
-
-    step_simulation = Simulation(6, T=t, r=1, order=order, periodic_boundary=periodic)
-    print("Nonoptimized step diff ", np.linalg.norm(step_simulation.trotterization - step_simulation.Href))
-
-    derivv = Derivative(step_simulation)
-
-    total_simulation = Simulation(6, T=T, r=R, order=order, periodic_boundary=periodic)
-    trotterization = total_simulation.trotterization
-    exact_solution = total_simulation.Href
-    # total_simulation.plot_eigenvalues()
-
-    optimization = Optimization(step_simulation, derivv)
-    optimized_trotterization = optimization.optimize_trotterization(time_step=t, r=R, recycle=True)
-
-    print("Difference between trotterization and exact solution: ", np.linalg.norm(trotterization - exact_solution))
-    print("Difference between opt. trott. and exact solution: ",
-          np.linalg.norm(optimized_trotterization - exact_solution))
-
-    # plot_error(N=6, T=1)
-    # plot_diff_arr_from_pickle("diff_arr_0.125")
+    plot_error(N=6, T=1)
+    # plot_diff_arr_from_pickle("bins/diff_arr_0.125_2_True")
     # compare_r(T=1, R=[2 ** x for x in range(7, 3, -1)])

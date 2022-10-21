@@ -9,27 +9,20 @@ Z = np.array([[1, 0], [0, -1]])
 
 
 def kron(elements):
-    kron_prod = 1
+    kron_prod = None
     for idx, elem in enumerate(elements):
-        if idx == 0:
-            kron_prod = elem
+        if type(elem) == int:
+            continue
         else:
-            shape = kron_prod.shape[0] * elem.shape[0]
-            kron_prod = np.einsum('ik,jl', kron_prod, elem).reshape(shape, shape)
+            if kron_prod is None:
+                kron_prod = elem
+            else:
+                shape = kron_prod.shape[0] * elem.shape[0]
+                kron_prod = np.einsum('ik,jl', kron_prod, elem).reshape(shape, shape)
+    if kron_prod is None:
+        exit("Invalid parameters for kron")
     return kron_prod
 
-
-def build_whole_circuit(file_name, r, order=2):
-    optimized_unitaries = pickle.load(open(file_name, "rb"))
-    circuit = np.eye(2 ** 6) # TODO: Replace 6 with N
-    for idx, U in enumerate(optimized_unitaries):
-        if idx % 2 == 0:
-            layer = kron((U, U, U))
-        else:
-            layer = kron((np.eye(2), U, U, np.eye(2)))
-        circuit = circuit @ layer
-
-    return matrix_power(circuit, r)
 
 def polar_decomp(A):
     """
@@ -53,6 +46,7 @@ def project_unitary_tangent(U, Z):
     """
     return U @ antisymm(U.conj().T @ Z)
 
+
 def eval_numerical_gradient(f, x, h=1e-5):
     """
     Approximate the numeric gradient of a function via
@@ -66,12 +60,38 @@ def eval_numerical_gradient(f, x, h=1e-5):
         i = it.multi_index
         xi_ref = x[i]
         x[i] = xi_ref + h
-        fpos = f(x)         # evaluate f(x + h)
+        fpos = f(x)  # evaluate f(x + h)
         x[i] = xi_ref - h
-        fneg = f(x)         # evaluate f(x - h)
-        x[i] = xi_ref       # restore
+        fneg = f(x)  # evaluate f(x - h)
+        x[i] = xi_ref  # restore
         # compute the partial derivative via centered difference quotient
         grad[i] = (fpos - fneg) / (2 * h)
-        it.iternext() # step to next dimension
+        it.iternext()  # step to next dimension
 
     return grad
+
+
+def build_circuit_from_pickle(file_name: str, r: int, periodic: bool, N: int):
+    optimized_unitaries = pickle.load(open(file_name, "rb"))
+    circuit = np.eye(2 ** N)
+    for idx, U in enumerate(optimized_unitaries):
+        if idx % 2 == 0:
+            layer = kron((U, U, U))
+        else:
+            if periodic:
+                layer = reshape_even_layer(U, periodic, N)
+            else:
+                layer = kron((np.eye(2), U, U, np.eye(2)))
+        circuit = circuit @ layer
+
+    return matrix_power(circuit, r)
+
+
+def reshape_even_layer(even_V, periodic, N):
+    if periodic:
+        matrix = kron((even_V, even_V, even_V))
+        matrix = np.reshape(matrix, (2 ** (N - 1), 2, 2 ** (N - 1), 2))
+        matrix = np.transpose(matrix, (1, 0, 3, 2))
+        return np.reshape(matrix, (2 ** N, 2 ** N))
+    else:
+        return kron((np.eye(2), even_V, even_V, np.eye(2)))

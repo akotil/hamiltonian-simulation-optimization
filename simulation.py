@@ -1,5 +1,6 @@
 import math
 
+import seaborn as sns
 import matplotlib.pyplot as plt
 import numpy as np
 from numpy.linalg import matrix_power, norm
@@ -26,9 +27,9 @@ class Simulation:
         self.params = []
         self.trotterization = self.get_segmented_trotterization()
 
-    def get_single_hamiltonian(self, k: int, t: float) -> np.ndarray:
-        exponent = lambda h: (np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + h * np.kron(Z, np.eye(2)))
-        exponential = expm(exponent(self.h_coeff[k]) * -1j * t)
+    def get_single_hamiltonian(self, t: float) -> np.ndarray:
+        exponent = np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + np.kron(Z, np.eye(2))
+        exponential = expm(exponent * -1j * t)
         return exponential
 
     def get_hamiltonian_layer(self, parity: int, t: float):
@@ -76,21 +77,15 @@ class Simulation:
         :param parity: 0 if the layer is even, 1 otherwise
         :return: (2**self.N, 2**self.N) - sized layer unitary corresponding to the given parity
         '''
-
         hamiltonian = np.eye(2 ** self.N)
         if parity == 0:
             # calculate the Hamiltonian for even terms
+            for k in range(1, math.ceil(self.N / 2)):
+                hamiltonian = hamiltonian @ self.get_block_hamiltonian(2 * k - 1, t)
             if self.periodic and self.N % 2 == 0:
-                for k in range(1, math.floor(self.N / 2) + 1):
-                    hamiltonian = hamiltonian @ self.get_block_hamiltonian(2 * k - 2, t)
-                hamiltonian = np.reshape(hamiltonian, (2, 2 ** (self.N - 1), 2, 2 ** (self.N - 1)))
-                hamiltonian = np.transpose(hamiltonian, (1, 0, 3, 2))
-                hamiltonian = np.reshape(hamiltonian, (2 ** self.N, 2 ** self.N))
-
-            else:
-                for k in range(1, math.ceil(self.N / 2)):
-                    hamiltonian = hamiltonian @ self.get_block_hamiltonian(2 * k - 1, t)
-
+                coupling = lambda pauli: np.kron(np.kron(pauli, np.eye(2 ** (self.N - 2))), pauli)
+                periodic_exponent = coupling(X) + coupling(Y) + coupling(Z) + np.kron(np.eye(2 ** (self.N - 1)), Z)
+                hamiltonian = hamiltonian @ expm(periodic_exponent * -1j * t)
         else:
             # calculate the Hamiltonian for odd terms
             for k in range(1, math.floor(self.N / 2) + 1):
@@ -103,7 +98,6 @@ class Simulation:
         even_H = self.get_parity_hamiltonian(t, 0)
         exponent = (np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + 1 * np.kron(Z, np.eye(2)))
         exponential = lambda param: expm(exponent * -1j * param)
-        # TODO: This way, in order to use the optimization, we need to start the simulation first. Change it maybe?
         self.layers.extend([(odd_H, even_H, odd_H)] * power)
         self.layer_unitaries.extend([(exponential(t / 2), exponential(t), exponential(t / 2))] * power)
         self.params.extend([t / 2, t, t / 2] * power)
@@ -125,17 +119,17 @@ class Simulation:
 
     def get_exact_solution(self) -> np.ndarray:
         ref_sol: np.ndarray
-        kron_sum = lambda h: np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + h * np.kron(Z, np.eye(2))
+        kron_sum = np.kron(X, X) + np.kron(Y, Y) + np.kron(Z, Z) + np.kron(Z, np.eye(2))
         hamiltonian = 0
         for k in range(self.N - 1):
             identity_1 = np.eye(2 ** k) if k > 0 else 1
             identity_2 = np.eye(2 ** (self.N - k - 2)) if k < self.N - 2 else 1
-            term = np.kron(np.kron(identity_1, kron_sum(1)), identity_2)
+            term = np.kron(np.kron(identity_1, kron_sum), identity_2)
             hamiltonian += term
 
         if self.periodic:
             coupling = lambda pauli: np.kron(np.kron(pauli, np.eye(2 ** (self.N - 2))), pauli)
-            hamiltonian += coupling(X) + coupling(Y) + coupling(Z) + 1 * np.kron(Z, np.eye(2 ** (self.N - 1)))
+            hamiltonian += coupling(X) + coupling(Y) + coupling(Z) + np.kron(np.eye(2 ** (self.N - 1)), Z)
 
         ref_sol = expm(-1j * hamiltonian * self.T)
         return ref_sol
@@ -172,30 +166,38 @@ def plot_r_graph(epsilon: float):
 
 
 def plot_error(N: int, T: float):
-    K = [1, 2, 3, 4]
-    R = [2 ** x for x in range(9, 2, -1)]
+    sns.set_theme(style='whitegrid', palette='deep')
+    K = [1, 2, 3]
+    R = [2 ** x for x in range(7, 2, -1)]
     delta_t = [T / r for r in R]
     print(delta_t)
-    colors = ["r", "b", "g", "m"]
+    colors = sns.color_palette("mako", 4)
     for k_idx, k in enumerate(K):
         empirical_errors = []
         theoretical_errors = []
         for t_idx, t in enumerate(delta_t):
-            simulation = Simulation(N, T, R[t_idx], k * 2, False)
-            trotterization = simulation.simulate()
+            simulation = Simulation(N, T, R[t_idx], k * 2, True)
+            trotterization = simulation.trotterization
             exact_sol = simulation.get_exact_solution()
             error = norm(trotterization - exact_sol)
             empirical_errors.append(error)
             theoretical_errors.append(N * t ** (2 * k) * T)
         plt.plot(delta_t, empirical_errors, label="k=" + str(k), color=colors[k_idx])
-        plt.plot(delta_t, theoretical_errors, label="analytic k=" + str(k), linestyle="dashed", color=colors[k_idx])
+        plt.plot(delta_t, theoretical_errors, linestyle="dashed", color=colors[k_idx])
 
     plt.xlabel(r'$\delta t$')
     plt.ylabel("Error")
 
     plt.title(r'$N={}, T={}$'.format(N, T))
 
+    plt.xlim(left=delta_t[0], right=delta_t[-1])
+
     plt.xscale("log")
     plt.yscale("log")
     plt.legend()
+    plt.savefig("plots/simulation_err", dpi=500)
     plt.show()
+
+
+if __name__ == "__main__":
+    plot_error(6, 1)
